@@ -5,6 +5,7 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - uploads_data:/data/uploads
     environment:
       DATABASE_URL: postgresql+psycopg://tenderai:tenderai_dev@db:5432/tenderai
     depends_on:
@@ -44,3 +45,4 @@ services:
 volumes:
   postgres_data:
   frontend_node_modules:
+  uploads_data:

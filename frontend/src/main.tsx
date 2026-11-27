@@ -3,6 +3,15 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 
 type AnalysisStatus = 'draft' | 'in_progress' | 'completed';
+type AnalysisDocument = {
+  id: number;
+  analysis_id: number;
+  original_name: string;
+  extension: string;
+  size_bytes: number;
+  uploaded_at: string;
+};
+
 type Analysis = {
   id: number;
   title: string;
@@ -23,6 +32,9 @@ function App() {
   const [selectedAnalysisId, setSelectedAnalysisId] = React.useState<number | null>(null);
   const [analyses, setAnalyses] = React.useState<Analysis[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [documents, setDocuments] = React.useState<AnalysisDocument[]>([]);
+  const [documentsLoading, setDocumentsLoading] = React.useState(false);
+  const [uploading, setUploading] = React.useState(false);
   const [error, setError] = React.useState('');
   const [showForm, setShowForm] = React.useState(false);
   const [title, setTitle] = React.useState('');
@@ -46,6 +58,24 @@ function App() {
       setLoading(false);
     }
   }, []);
+
+  React.useEffect(() => {
+    if (selectedAnalysisId === null) {
+      setDocuments([]);
+      return;
+    }
+    let cancelled = false;
+    setDocumentsLoading(true);
+    fetch(`/api/analyses/${selectedAnalysisId}/documents`)
+      .then((response) => {
+        if (!response.ok) throw new Error('Не удалось загрузить список файлов');
+        return response.json();
+      })
+      .then((data: AnalysisDocument[]) => { if (!cancelled) setDocuments(data); })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Ошибка загрузки файлов'); })
+      .finally(() => { if (!cancelled) setDocumentsLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedAnalysisId]);
 
   React.useEffect(() => {
     fetch('/api/health')
@@ -137,6 +167,57 @@ function App() {
     await loadAnalyses();
   }
 
+  async function uploadDocuments(event: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    if (!selectedAnalysis || files.length === 0) return;
+    setUploading(true);
+    setError('');
+    try {
+      for (const file of files) {
+        const body = new FormData();
+        body.append('file', file);
+        const response = await fetch(`/api/analyses/${selectedAnalysis.id}/documents`, {
+          method: 'POST',
+          body,
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => null);
+          throw new Error(`${file.name}: ${data?.detail || 'Не удалось загрузить файл'}`);
+        }
+      }
+      const response = await fetch(`/api/analyses/${selectedAnalysis.id}/documents`);
+      if (!response.ok) throw new Error('Файлы загружены, но список не обновился');
+      setDocuments(await response.json());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Ошибка загрузки файла');
+      const response = await fetch(`/api/analyses/${selectedAnalysis.id}/documents`);
+      if (response.ok) setDocuments(await response.json());
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function deleteDocument(document: AnalysisDocument) {
+    if (!selectedAnalysis) return;
+    if (!window.confirm(`Удалить файл «${document.original_name}»?`)) return;
+    const response = await fetch(
+      `/api/analyses/${selectedAnalysis.id}/documents/${document.id}`,
+      { method: 'DELETE' },
+    );
+    if (!response.ok) {
+      setError('Не удалось удалить файл');
+      return;
+    }
+    setDocuments((current) => current.filter((item) => item.id !== document.id));
+  }
+
+  function formatFileSize(bytes: number) {
+    if (bytes < 1024) return `${bytes} Б`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+  }
+
   return (
     <main className="page">
       <header className="topbar"><a className="brand" href="/" onClick={(event) => { event.preventDefault(); setSelectedAnalysisId(null); }}><span className="logo">T</span><strong>TenderAI</strong></a><span className="status">{apiStatus}</span></header>
@@ -149,10 +230,28 @@ function App() {
           </div>
           <button className="secondary" onClick={() => { startEditing(selectedAnalysis); setSelectedAnalysisId(null); }}>Редактировать</button>
         </div>
+        {error && <div className="error detail-error" role="alert">{error}</div>}
         <section className="detail-panel">
-          <h2>Рабочая область анализа</h2>
-          <p>Здесь будут размещены техническое задание, коммерческие предложения, результаты сопоставления и итоговое заключение.</p>
-          <div className="detail-placeholder"><strong>Документы пока не добавлены</strong><span>Добавление и обработка файлов появятся следующим этапом.</span></div>
+          <div className="documents-heading">
+            <div><h2>Документы анализа</h2><p>Добавляйте ТЗ и коммерческие предложения. Обработка содержимого будет добавлена позже.</p></div>
+            <label className={`primary upload-button ${uploading ? 'disabled' : ''}`}>
+              {uploading ? 'Загружаем…' : '+ Добавить файлы'}
+              <input type="file" multiple accept=".pdf,.docx,.xlsx,.txt" onChange={(event) => void uploadDocuments(event)} disabled={uploading} />
+            </label>
+          </div>
+          <p className="file-hint">Форматы: PDF, DOCX, XLSX, TXT. До 25 МБ на файл.</p>
+          {documentsLoading ? <p className="empty">Загружаем список файлов…</p> : documents.length === 0 ? (
+            <div className="detail-placeholder"><strong>Документы пока не добавлены</strong><span>Выберите файлы, чтобы прикрепить их к этому анализу.</span></div>
+          ) : <div className="document-list">{documents.map((document) => (
+            <article className="document-row" key={document.id}>
+              <div className="document-icon">{document.extension.slice(1).toUpperCase()}</div>
+              <div className="document-info"><strong>{document.original_name}</strong><span>{formatFileSize(document.size_bytes)} · Загружен {new Date(document.uploaded_at).toLocaleString('ru-RU')}</span></div>
+              <div className="document-actions">
+                <a className="secondary file-link" href={`/api/analyses/${selectedAnalysis.id}/documents/${document.id}/download`}>Скачать</a>
+                <button className="danger" onClick={() => void deleteDocument(document)}>Удалить</button>
+              </div>
+            </article>
+          ))}</div>}
         </section>
         <p className="detail-meta">Создан: {new Date(selectedAnalysis.created_at).toLocaleString('ru-RU')} · Изменён: {new Date(selectedAnalysis.updated_at).toLocaleString('ru-RU')}</p>
       </section> : <>
