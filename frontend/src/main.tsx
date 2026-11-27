@@ -20,6 +20,7 @@ const statusLabels: Record<AnalysisStatus, string> = {
 
 function App() {
   const [apiStatus, setApiStatus] = React.useState('Проверяем API…');
+  const [selectedAnalysisId, setSelectedAnalysisId] = React.useState<number | null>(null);
   const [analyses, setAnalyses] = React.useState<Analysis[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState('');
@@ -30,6 +31,7 @@ function App() {
   const [editingId, setEditingId] = React.useState<number | null>(null);
   const [editTitle, setEditTitle] = React.useState('');
   const [editDescription, setEditDescription] = React.useState('');
+  const selectedAnalysis = analyses.find((item) => item.id === selectedAnalysisId) ?? null;
 
   const loadAnalyses = React.useCallback(async () => {
     setLoading(true);
@@ -137,7 +139,23 @@ function App() {
 
   return (
     <main className="page">
-      <header className="topbar"><a className="brand" href="/"><span className="logo">T</span><strong>TenderAI</strong></a><span className="status">{apiStatus}</span></header>
+      <header className="topbar"><a className="brand" href="/" onClick={(event) => { event.preventDefault(); setSelectedAnalysisId(null); }}><span className="logo">T</span><strong>TenderAI</strong></a><span className="status">{apiStatus}</span></header>
+      {selectedAnalysis ? <section className="detail-page">
+        <button className="secondary back-button" onClick={() => setSelectedAnalysisId(null)}>← К списку анализов</button>
+        <div className="detail-heading">
+          <div><p className="eyebrow">АНАЛИЗ ЗАКУПКИ</p><h1>{selectedAnalysis.title}</h1>
+            {selectedAnalysis.description && <p className="lead">{selectedAnalysis.description}</p>}
+            <span className={`status-pill ${selectedAnalysis.status}`}>{statusLabels[selectedAnalysis.status]}</span>
+          </div>
+          <button className="secondary" onClick={() => { startEditing(selectedAnalysis); setSelectedAnalysisId(null); }}>Редактировать</button>
+        </div>
+        <section className="detail-panel">
+          <h2>Рабочая область анализа</h2>
+          <p>Здесь будут размещены техническое задание, коммерческие предложения, результаты сопоставления и итоговое заключение.</p>
+          <div className="detail-placeholder"><strong>Документы пока не добавлены</strong><span>Добавление и обработка файлов появятся следующим этапом.</span></div>
+        </section>
+        <p className="detail-meta">Создан: {new Date(selectedAnalysis.created_at).toLocaleString('ru-RU')} · Изменён: {new Date(selectedAnalysis.updated_at).toLocaleString('ru-RU')}</p>
+      </section> : <>
       <section className="hero">
         <p className="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО</p>
         <h1>Анализы закупок</h1>
@@ -163,11 +181,12 @@ function App() {
               <label>Название анализа<input autoFocus required maxLength={200} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} /></label>
               <label>Описание <span className="muted">(необязательно)</span><textarea rows={3} maxLength={2000} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} /></label>
               <div className="edit-form-actions"><button className="primary" type="submit" disabled={saving || !editTitle.trim()}>{saving ? 'Сохраняем…' : 'Сохранить'}</button><button className="secondary" type="button" onClick={cancelEditing} disabled={saving}>Отмена</button></div>
-            </form> : <><h3>{item.title}</h3>{item.description && <p>{item.description}</p>}</>}
+            </form> : <><h3><button className="analysis-title" onClick={() => setSelectedAnalysisId(item.id)}>{item.title}</button></h3>{item.description && <p>{item.description}</p>}</>}
             <small>Создан: {new Date(item.created_at).toLocaleString('ru-RU')} · Изменён: {new Date(item.updated_at).toLocaleString('ru-RU')}</small></div>
-          <div className="analysis-actions"><label className="status-select-label">Статус<select value={item.status} onChange={(e) => void updateStatus(item, e.target.value as AnalysisStatus)}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>{editingId !== item.id && <button className="secondary" onClick={() => startEditing(item)}>Редактировать</button>}<button className="danger" onClick={() => void deleteAnalysis(item)}>Удалить</button></div>
+          <div className="analysis-actions"><label className="status-select-label">Статус<select value={item.status} onChange={(e) => void updateStatus(item, e.target.value as AnalysisStatus)}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>{editingId !== item.id && <><button className="secondary" onClick={() => setSelectedAnalysisId(item.id)}>Открыть</button><button className="secondary" onClick={() => startEditing(item)}>Редактировать</button></>}<button className="danger" onClick={() => void deleteAnalysis(item)}>Удалить</button></div>
         </article>)}</div>}
       </section>
+      </>}
     </main>
   );
 }
