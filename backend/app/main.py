@@ -1,6 +1,7 @@
 import os
 import mimetypes
 import uuid
+from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timezone
 from enum import Enum
@@ -9,7 +10,7 @@ from typing import Generator
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Integer, String, create_engine, select
+from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Integer, String, Text, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 DATABASE_URL = os.getenv(
@@ -90,6 +91,25 @@ class AnalysisDocument(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
+
+
+class DocumentText(Base):
+    __tablename__ = "document_texts"
+
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("analysis_documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    extracted_text: Mapped[str] = mapped_column(Text, nullable=False)
+    extracted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+
+class DocumentTextRead(BaseModel):
+    document_id: int
+    extracted_text: str
+    extracted_at: datetime
+    truncated: bool = False
 
 
 class DocumentRead(BaseModel):
@@ -232,6 +252,95 @@ async def upload_document(
         target_path.unlink(missing_ok=True)
         raise
     return item
+
+
+@app.post(
+    "/api/analyses/{analysis_id}/documents/{document_id}/extract",
+    response_model=DocumentTextRead,
+)
+def extract_document_text(
+    analysis_id: int, document_id: int, db: Session = Depends(get_db)
+) -> DocumentTextRead:
+    """Extract and persist searchable text from a supported uploaded document."""
+    item = db.get(AnalysisDocument, document_id)
+    if item is None or item.analysis_id != analysis_id:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+
+    path = UPLOAD_DIR / str(analysis_id) / item.stored_name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Файл не найден в хранилище")
+
+    try:
+        content = path.read_bytes()
+        if item.extension == ".txt":
+            try:
+                extracted = content.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                extracted = content.decode("cp1251")
+        elif item.extension == ".pdf":
+            from pypdf import PdfReader
+            reader = PdfReader(BytesIO(content))
+            if reader.is_encrypted:
+                raise ValueError("PDF защищён паролем")
+            extracted = "\\n\\n".join((page.extract_text() or "") for page in reader.pages)
+        elif item.extension == ".docx":
+            from docx import Document as WordDocument
+            document = WordDocument(BytesIO(content))
+            parts = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
+            for table in document.tables:
+                for row in table.rows:
+                    parts.append(" | ".join(cell.text.strip() for cell in row.cells))
+            extracted = "\\n".join(parts)
+        elif item.extension == ".xlsx":
+            from openpyxl import load_workbook
+            workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+            sheet_parts = []
+            for sheet in workbook.worksheets:
+                rows = []
+                for row in sheet.iter_rows(values_only=True):
+                    values = [str(value).strip() if value is not None else "" for value in row]
+                    if any(values):
+                        rows.append(" | ".join(values))
+                if rows:
+                    sheet_parts.append(f"Лист: {sheet.title}\\n" + "\\n".join(rows))
+            workbook.close()
+            extracted = "\\n\\n".join(sheet_parts)
+        else:
+            raise HTTPException(status_code=415, detail="Формат файла не поддерживается")
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        detail = str(exc) if isinstance(exc, (UnicodeDecodeError, ValueError)) else "Не удалось прочитать документ. Проверьте, что файл не повреждён."
+        raise HTTPException(status_code=422, detail=detail) from exc
+
+    extracted = extracted.replace("\\x00", "").strip()
+    if not extracted:
+        raise HTTPException(
+            status_code=422,
+            detail="Текст не найден. Возможно, PDF содержит сканированные изображения; для них понадобится OCR.",
+        )
+
+    max_chars = 1_000_000
+    truncated = len(extracted) > max_chars
+    if truncated:
+        extracted = extracted[:max_chars]
+
+    record = db.get(DocumentText, document_id)
+    if record is None:
+        record = DocumentText(document_id=document_id, extracted_text=extracted)
+        db.add(record)
+    else:
+        record.extracted_text = extracted
+        record.extracted_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(record)
+    return DocumentTextRead(
+        document_id=document_id,
+        extracted_text=record.extracted_text,
+        extracted_at=record.extracted_at,
+        truncated=truncated,
+    )
 
 
 @app.get("/api/analyses/{analysis_id}/documents/{document_id}/download")

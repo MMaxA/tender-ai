@@ -3,6 +3,13 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 
 type AnalysisStatus = 'draft' | 'in_progress' | 'completed';
+type DocumentTextRead = {
+  document_id: number;
+  extracted_text: string;
+  extracted_at: string;
+  truncated: boolean;
+};
+
 type AnalysisDocument = {
   id: number;
   analysis_id: number;
@@ -35,6 +42,9 @@ function App() {
   const [documents, setDocuments] = React.useState<AnalysisDocument[]>([]);
   const [documentsLoading, setDocumentsLoading] = React.useState(false);
   const [uploading, setUploading] = React.useState(false);
+  const [extractingId, setExtractingId] = React.useState<number | null>(null);
+  const [extractedDocuments, setExtractedDocuments] = React.useState<Record<number, DocumentTextRead>>({});
+  const [visibleTextId, setVisibleTextId] = React.useState<number | null>(null);
   const [error, setError] = React.useState('');
   const [showForm, setShowForm] = React.useState(false);
   const [title, setTitle] = React.useState('');
@@ -60,6 +70,8 @@ function App() {
   }, []);
 
   React.useEffect(() => {
+    setExtractedDocuments({});
+      setVisibleTextId(null);
     if (selectedAnalysisId === null) {
       setDocuments([]);
       return;
@@ -212,6 +224,35 @@ function App() {
     setDocuments((current) => current.filter((item) => item.id !== document.id));
   }
 
+  async function extractDocument(document: AnalysisDocument) {
+    if (!selectedAnalysis) return;
+    if (visibleTextId === document.id) {
+      setVisibleTextId(null);
+      return;
+    }
+    const cached = extractedDocuments[document.id];
+    if (cached) {
+      setVisibleTextId(document.id);
+      return;
+    }
+    setExtractingId(document.id);
+    setError('');
+    try {
+      const response = await fetch(
+        `/api/analyses/${selectedAnalysis.id}/documents/${document.id}/extract`,
+        { method: 'POST' },
+      );
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.detail || 'Не удалось извлечь текст');
+      setExtractedDocuments((current) => ({ ...current, [document.id]: data as DocumentTextRead }));
+      setVisibleTextId(document.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Ошибка извлечения текста');
+    } finally {
+      setExtractingId(null);
+    }
+  }
+
   function formatFileSize(bytes: number) {
     if (bytes < 1024) return `${bytes} Б`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
@@ -247,9 +288,18 @@ function App() {
               <div className="document-icon">{document.extension.slice(1).toUpperCase()}</div>
               <div className="document-info"><strong>{document.original_name}</strong><span>{formatFileSize(document.size_bytes)} · Загружен {new Date(document.uploaded_at).toLocaleString('ru-RU')}</span></div>
               <div className="document-actions">
+                <button className="secondary file-link" onClick={() => void extractDocument(document)} disabled={extractingId === document.id}>
+                  {extractingId === document.id ? 'Извлекаем…' : visibleTextId === document.id ? 'Скрыть текст' : extractedDocuments[document.id] ? 'Показать текст' : 'Извлечь текст'}
+                </button>
                 <a className="secondary file-link" href={`/api/analyses/${selectedAnalysis.id}/documents/${document.id}/download`}>Скачать</a>
                 <button className="danger" onClick={() => void deleteDocument(document)}>Удалить</button>
               </div>
+              {visibleTextId === document.id && extractedDocuments[document.id] && (
+                <div className="extracted-text">
+                  <div className="extracted-text-heading"><strong>Извлечённый текст</strong><span>{extractedDocuments[document.id].truncated ? 'Текст обрезан до 1 000 000 символов' : 'Текст извлечён'}</span></div>
+                  <pre>{extractedDocuments[document.id].extracted_text}</pre>
+                </div>
+              )}
             </article>
           ))}</div>}
         </section>
