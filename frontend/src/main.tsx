@@ -10,11 +10,14 @@ type DocumentTextRead = {
   truncated: boolean;
 };
 
+type DocumentType = 'technical_specification' | 'commercial_offer' | 'other';
+
 type AnalysisDocument = {
   id: number;
   analysis_id: number;
   original_name: string;
   extension: string;
+  doc_type: DocumentType;
   size_bytes: number;
   uploaded_at: string;
 };
@@ -26,6 +29,12 @@ type Analysis = {
   status: AnalysisStatus;
   created_at: string;
   updated_at: string;
+};
+
+const documentTypeLabels: Record<DocumentType, string> = {
+  technical_specification: 'Техническое задание',
+  commercial_offer: 'Коммерческое предложение',
+  other: 'Другой документ',
 };
 
 const statusLabels: Record<AnalysisStatus, string> = {
@@ -42,6 +51,8 @@ function App() {
   const [documents, setDocuments] = React.useState<AnalysisDocument[]>([]);
   const [documentsLoading, setDocumentsLoading] = React.useState(false);
   const [uploading, setUploading] = React.useState(false);
+  const [uploadDocType, setUploadDocType] = React.useState<DocumentType>('other');
+  const [updatingDocTypeId, setUpdatingDocTypeId] = React.useState<number | null>(null);
   const [extractingId, setExtractingId] = React.useState<number | null>(null);
   const [extractedDocuments, setExtractedDocuments] = React.useState<Record<number, DocumentTextRead>>({});
   const [visibleTextId, setVisibleTextId] = React.useState<number | null>(null);
@@ -189,6 +200,7 @@ function App() {
       for (const file of files) {
         const body = new FormData();
         body.append('file', file);
+        body.append('doc_type', uploadDocType);
         const response = await fetch(`/api/analyses/${selectedAnalysis.id}/documents`, {
           method: 'POST',
           body,
@@ -222,6 +234,29 @@ function App() {
       return;
     }
     setDocuments((current) => current.filter((item) => item.id !== document.id));
+  }
+
+  async function updateDocumentType(document: AnalysisDocument, docType: DocumentType) {
+    if (!selectedAnalysis || document.doc_type === docType) return;
+    setUpdatingDocTypeId(document.id);
+    setError('');
+    try {
+      const response = await fetch(
+        `/api/analyses/${selectedAnalysis.id}/documents/${document.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ doc_type: docType }),
+        },
+      );
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.detail || 'Не удалось изменить тип документа');
+      setDocuments((current) => current.map((item) => item.id === document.id ? data as AnalysisDocument : item));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Ошибка изменения типа документа');
+    } finally {
+      setUpdatingDocTypeId(null);
+    }
   }
 
   async function extractDocument(document: AnalysisDocument) {
@@ -275,10 +310,19 @@ function App() {
         <section className="detail-panel">
           <div className="documents-heading">
             <div><h2>Документы анализа</h2><p>Добавляйте ТЗ и коммерческие предложения. Обработка содержимого будет добавлена позже.</p></div>
-            <label className={`primary upload-button ${uploading ? 'disabled' : ''}`}>
-              {uploading ? 'Загружаем…' : '+ Добавить файлы'}
-              <input type="file" multiple accept=".pdf,.docx,.xlsx,.txt" onChange={(event) => void uploadDocuments(event)} disabled={uploading} />
-            </label>
+            <div className="upload-controls">
+              <label className="type-select-label">Тип новых файлов
+                <select value={uploadDocType} onChange={(event) => setUploadDocType(event.target.value as DocumentType)} disabled={uploading}>
+                  <option value="technical_specification">Техническое задание</option>
+                  <option value="commercial_offer">Коммерческое предложение</option>
+                  <option value="other">Другой документ</option>
+                </select>
+              </label>
+              <label className={`primary upload-button ${uploading ? 'disabled' : ''}`}>
+                {uploading ? 'Загружаем…' : '+ Добавить файлы'}
+                <input type="file" multiple accept=".pdf,.docx,.xlsx,.txt" onChange={(event) => void uploadDocuments(event)} disabled={uploading} />
+              </label>
+            </div>
           </div>
           <p className="file-hint">Форматы: PDF, DOCX, XLSX, TXT. До 25 МБ на файл.</p>
           {documentsLoading ? <p className="empty">Загружаем список файлов…</p> : documents.length === 0 ? (
@@ -286,8 +330,13 @@ function App() {
           ) : <div className="document-list">{documents.map((document) => (
             <article className="document-row" key={document.id}>
               <div className="document-icon">{document.extension.slice(1).toUpperCase()}</div>
-              <div className="document-info"><strong>{document.original_name}</strong><span>{formatFileSize(document.size_bytes)} · Загружен {new Date(document.uploaded_at).toLocaleString('ru-RU')}</span></div>
+              <div className="document-info"><strong>{document.original_name}</strong><span>{formatFileSize(document.size_bytes)} · Загружен {new Date(document.uploaded_at).toLocaleString('ru-RU')}</span><span>{documentTypeLabels[document.doc_type]}</span></div>
               <div className="document-actions">
+                <select aria-label={`Тип документа ${document.original_name}`} value={document.doc_type} disabled={updatingDocTypeId === document.id} onChange={(event) => void updateDocumentType(document, event.target.value as DocumentType)}>
+                  <option value="technical_specification">Техническое задание</option>
+                  <option value="commercial_offer">Коммерческое предложение</option>
+                  <option value="other">Другой документ</option>
+                </select>
                 <button className="secondary file-link" onClick={() => void extractDocument(document)} disabled={extractingId === document.id}>
                   {extractingId === document.id ? 'Извлекаем…' : visibleTextId === document.id ? 'Скрыть текст' : extractedDocuments[document.id] ? 'Показать текст' : 'Извлечь текст'}
                 </button>

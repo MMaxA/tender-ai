@@ -7,10 +7,10 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Generator
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, Response, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Integer, String, Text, create_engine, select
+from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Integer, String, Text, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 DATABASE_URL = os.getenv(
@@ -77,6 +77,12 @@ MAX_FILE_SIZE = 25 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".txt"}
 
 
+class DocumentType(str, Enum):
+    technical_specification = "technical_specification"
+    commercial_offer = "commercial_offer"
+    other = "other"
+
+
 class AnalysisDocument(Base):
     __tablename__ = "analysis_documents"
 
@@ -87,6 +93,7 @@ class AnalysisDocument(Base):
     original_name: Mapped[str] = mapped_column(String(255), nullable=False)
     stored_name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     extension: Mapped[str] = mapped_column(String(12), nullable=False)
+    doc_type: Mapped[str] = mapped_column(String(32), nullable=False, default=DocumentType.other.value)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
@@ -112,12 +119,17 @@ class DocumentTextRead(BaseModel):
     truncated: bool = False
 
 
+class DocumentUpdate(BaseModel):
+    doc_type: DocumentType
+
+
 class DocumentRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     analysis_id: int
     original_name: str
     extension: str
+    doc_type: DocumentType = DocumentType.other
     size_bytes: int
     uploaded_at: datetime
 
@@ -135,6 +147,12 @@ app.add_middleware(
 @app.on_event("startup")
 def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
+    # Add the new metadata field to existing local databases without deleting data.
+    with engine.begin() as connection:
+        connection.execute(text(
+            "ALTER TABLE analysis_documents ADD COLUMN IF NOT EXISTS "
+            "doc_type VARCHAR(32) NOT NULL DEFAULT 'other'"
+        ))
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -213,6 +231,7 @@ def list_documents(analysis_id: int, db: Session = Depends(get_db)) -> list[Anal
 async def upload_document(
     analysis_id: int,
     file: UploadFile = File(...),
+    doc_type: DocumentType = Form(default=DocumentType.other),
     db: Session = Depends(get_db),
 ) -> AnalysisDocument:
     if db.get(Analysis, analysis_id) is None:
@@ -241,6 +260,7 @@ async def upload_document(
         original_name=original_name[:255],
         stored_name=stored_name,
         extension=extension,
+        doc_type=doc_type.value,
         size_bytes=len(content),
     )
     try:
@@ -341,6 +361,25 @@ def extract_document_text(
         extracted_at=record.extracted_at,
         truncated=truncated,
     )
+
+
+@app.patch(
+    "/api/analyses/{analysis_id}/documents/{document_id}",
+    response_model=DocumentRead,
+)
+def update_document_type(
+    analysis_id: int,
+    document_id: int,
+    payload: DocumentUpdate,
+    db: Session = Depends(get_db),
+) -> AnalysisDocument:
+    item = db.get(AnalysisDocument, document_id)
+    if item is None or item.analysis_id != analysis_id:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    item.doc_type = payload.doc_type.value
+    db.commit()
+    db.refresh(item)
+    return item
 
 
 @app.get("/api/analyses/{analysis_id}/documents/{document_id}/download")

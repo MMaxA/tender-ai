@@ -45,3 +45,7 @@ docker compose up --build
 ## Извлечение текста из документов
 
 В карточке анализа нажмите «Извлечь текст» у загруженного документа. Текст извлекается на backend и сохраняется в PostgreSQL для последующего анализа. Поддерживаются TXT (UTF-8/Windows-1251), текстовые PDF, DOCX и XLSX. PDF-сканы без текстового слоя пока требуют OCR и вернут понятную ошибку. Извлечённый текст ограничен 1 000 000 символов на документ.
+
+### Document classification
+
+Uploaded files can be classified as a technical specification, commercial offer, or other document. The selected type is stored with document metadata and can be changed from the document row. Existing documents default to `other`; startup adds the metadata column to an existing PostgreSQL database without dropping records.
